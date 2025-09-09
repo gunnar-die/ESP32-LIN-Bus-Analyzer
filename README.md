@@ -52,7 +52,7 @@ https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32
 
 ### 4. Upload the Code
 
-- Open the `linsniff_esp32c3.ino` file (not included here).
+- Open the `linsniff_esp32c3.ino` file.
 - Connect your board via USB.
 - Click **Upload**.
 
