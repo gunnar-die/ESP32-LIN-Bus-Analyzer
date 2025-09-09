@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LIN Bus Sniffer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=Roboto+Mono:wght@400;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #121212;
+            color: #E0E0E0;
+        }
+        .container {
+            max-width: 1024px;
+        }
+        .log-area {
+            background-color: #1E1E1E;
+            font-family: 'Roboto Mono', monospace;
+            min-height: 200px;
+            max-height: 400px;
+            overflow-y: auto;
+            border-radius: 0.5rem;
+        }
+        .scroll-smooth {
+            scroll-behavior: smooth;
+        }
+        .fade-in {
+            animation: fadeIn 0.5s ease-in-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #333;
+        }
+        th {
+            background-color: #2D2D2D;
+            font-weight: bold;
+            color: #E0E0E0;
+        }
+        tr:hover {
+            background-color: #2D2D2D;
+        }
+    </style>
+</head>
+<body class="p-6 md:p-10 flex flex-col items-center min-h-screen">
+
+    <div class="container w-full">
+        <header class="text-center mb-10">
+            <h1 class="text-3xl md:text-4xl font-bold text-teal-400 mb-2">LIN Bus Sniffer</h1>
+            <p class="text-lg text-gray-400">Filter and analyze live serial data from your ESP32 / TJA1028.</p>
+        </header>
+
+        <section class="bg-gray-800 p-6 md:p-8 rounded-lg shadow-xl mb-6 border border-gray-700 fade-in">
+            <h2 class="text-2xl font-bold mb-4 text-white">Instructions</h2>
+            <ol class="list-decimal list-inside text-gray-300 space-y-2">
+                <li>Make sure your ESP32 is running the LINsniff code and is connected to your computer.</li>
+                <li>Click the "Connect" button and select the correct serial port.</li>
+                <li>Wait for the normal LIN bus traffic to appear in the raw log.</li>
+                <li>Click the "Capture Baseline" button. All current messages will be added to the baseline.</li>
+                <li>Press buttons on your steering wheel. The new, unique messages will appear in the "New Messages" log.</li>
+            </ol>
+        </section>
+
+        <section class="bg-gray-800 p-6 md:p-8 rounded-lg shadow-xl mb-6 border border-gray-700 fade-in">
+            <div class="flex flex-wrap sm:flex-nowrap justify-between items-center mb-6 gap-4">
+                <button id="connectButton"
+                        class="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-full transition-colors duration-200 shadow-lg transform active:scale-95">
+                    Connect to ESP32
+                </button>
+                <button id="captureBaselineButton" disabled
+                        class="w-full sm:w-auto bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-full transition-colors duration-200 shadow-lg transform active:scale-95 disabled:bg-gray-500 disabled:cursor-not-allowed">
+                    Capture Baseline
+                </button>
+                <button id="clearNewMessagesButton" disabled
+                        class="w-full sm:w-auto bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-full transition-colors duration-200 shadow-lg transform active:scale-95 disabled:bg-gray-500 disabled:cursor-not-allowed">
+                    Clear New Messages
+                </button>
+                <div class="flex items-center w-full sm:w-auto mt-4 sm:mt-0">
+                    <input type="text" id="filterIdInput" placeholder="Filter by ID (e.g., 'F0')"
+                           class="w-full sm:w-64 p-3 rounded-l-full bg-gray-700 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 transition-all duration-200">
+                    <button id="filterButton"
+                            class="bg-teal-600 hover:bg-teal-700 text-white font-bold py-3 px-6 rounded-r-full transition-colors duration-200 shadow-lg transform active:scale-95">
+                        Filter
+                    </button>
+                </div>
+            </div>
+            <span id="statusText" class="text-sm font-semibold text-gray-400">Status: Disconnected</span>
+
+            <div class="grid md:grid-cols-2 gap-6 mt-6">
+                <div>
+                    <h3 class="text-xl font-semibold text-gray-200 mb-2">Raw Data</h3>
+                    <div id="rawLog" class="log-area p-4 text-gray-300"></div>
+                </div>
+                <div>
+                    <h3 class="text-xl font-semibold text-gray-200 mb-2">New Messages (Not in Baseline)</h3>
+                    <div class="log-area overflow-hidden">
+                        <table id="newMessagesTable" class="text-xs sm:text-sm">
+                            <thead>
+                                <tr class="bg-gray-700">
+                                    <th class="py-2 px-3">ID</th>
+                                    <th class="py-2 px-3">Bytes</th>
+                                    <th class="py-2 px-3">Timestamp</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Table rows will be inserted here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        // Global variables for serial port and UI elements
+        let port;
+        let reader;
+        let isListening = false;
+        let lineBuffer = '';
+        let logLines = []; // Raw log data
+        const maxLogLines = 1000;
+        let newMessages = []; // Persistent list of new message objects
+        const baselineIds = new Set();
+        let manualFilterId = '';
+        let updateInterval;
+
+        const connectButton = document.getElementById('connectButton');
+        const captureBaselineButton = document.getElementById('captureBaselineButton');
+        const clearNewMessagesButton = document.getElementById('clearNewMessagesButton');
+        const statusText = document.getElementById('statusText');
+        const rawLog = document.getElementById('rawLog');
+        const newMessagesTableBody = document.querySelector('#newMessagesTable tbody');
+        const filterIdInput = document.getElementById('filterIdInput');
+        const filterButton = document.getElementById('filterButton');
+
+        // Function to update the UI logs from the buffers
+        function updateLogsFromBuffer() {
+            // Update raw log
+            const rawText = logLines.join('\n');
+            rawLog.textContent = rawText;
+            rawLog.scrollTop = rawLog.scrollHeight;
+            
+            // Update new messages table
+            updateNewMessagesTable();
+        }
+
+        // Function to update the new messages table
+        function updateNewMessagesTable() {
+            newMessagesTableBody.innerHTML = '';
+            const filteredMessages = newMessages.filter(msg => {
+                return !manualFilterId || msg.id.toUpperCase() === manualFilterId.toUpperCase();
+            });
+
+            filteredMessages.forEach(msg => {
+                const row = document.createElement('tr');
+                const idCell = document.createElement('td');
+                const bytesCell = document.createElement('td');
+                const timeCell = document.createElement('td');
+
+                idCell.textContent = msg.id;
+                bytesCell.textContent = msg.bytes;
+                timeCell.textContent = msg.timestamp;
+
+                row.appendChild(idCell);
+                row.appendChild(bytesCell);
+                row.appendChild(timeCell);
+                newMessagesTableBody.appendChild(row);
+            });
+        }
+
+        // Main function to connect to the serial port
+        async function connectSerial() {
+            try {
+                const availablePorts = await navigator.serial.getPorts();
+                let selectedPort = availablePorts.length > 0 ? availablePorts[0] : await navigator.serial.requestPort();
+                port = selectedPort;
+
+                await port.open({ baudRate: 115200 });
+                statusText.textContent = 'Status: Connected';
+                connectButton.textContent = 'Disconnect';
+                captureBaselineButton.disabled = false;
+                clearNewMessagesButton.disabled = false;
+                isListening = true;
+                
+                // Start the throttled UI update loop
+                updateInterval = setInterval(updateLogsFromBuffer, 50);
+
+                readSerial();
+
+            } catch (error) {
+                console.error('Error connecting to serial port:', error);
+                statusText.textContent = `Error: ${error.message}`;
+                isListening = false;
+            }
+        }
+
+        // Main function to read data from the serial port
+        async function readSerial() {
+            if (!port || !port.readable) {
+                return;
+            }
+            reader = port.readable.getReader();
+            const decoder = new TextDecoder();
+
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) {
+                        break;
+                    }
+                    if (value) {
+                        const text = decoder.decode(value);
+                        lineBuffer += text;
+
+                        // Process the buffer line by line
+                        let newlineIndex;
+                        while ((newlineIndex = lineBuffer.indexOf('\n')) !== -1) {
+                            const line = lineBuffer.substring(0, newlineIndex).trim();
+                            if (line) {
+                                logLines.push(line);
+                                // Limit the raw log to prevent excessive memory usage
+                                if (logLines.length > maxLogLines) {
+                                    logLines.shift();
+                                }
+
+                                // Check if the line is a new message and add to the persistent log
+                                const match = line.match(/ID: ([0-9a-fA-F]+), Data: ([0-9a-fA-F\s]+)/);
+                                if (match) {
+                                    const id = match[1].toUpperCase();
+                                    const bytes = match[2];
+                                    if (!baselineIds.has(id)) {
+                                        // Only add the message once per ID
+                                        const isAlreadyLogged = newMessages.some(msg => msg.id === id);
+                                        if (!isAlreadyLogged) {
+                                            const now = new Date();
+                                            const timestamp = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+                                            newMessages.push({ id, bytes, timestamp });
+                                        }
+                                    }
+                                }
+                            }
+                            lineBuffer = lineBuffer.substring(newlineIndex + 1);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error reading serial data:', error);
+            } finally {
+                reader.releaseLock();
+            }
+        }
+
+        // Function to capture the current messages as the baseline
+        function captureBaseline() {
+            if (!isListening) return;
+
+            const newIdsCaptured = new Set();
+            logLines.forEach(line => {
+                const match = line.match(/ID: ([0-9a-fA-F]+), Data: ([0-9a-fA-F\s]+)/);
+                if (match) {
+                    const id = match[1].toUpperCase();
+                    if (!baselineIds.has(id)) {
+                        baselineIds.add(id);
+                        newIdsCaptured.add(id);
+                    }
+                }
+            });
+
+            statusText.textContent = `Status: ${newIdsCaptured.size} IDs added to baseline. Total baseline size: ${baselineIds.size}.`;
+            newMessages = []; // Clear the new messages log for a fresh start
+            updateLogsFromBuffer();
+        }
+
+        // Function to clear the new messages log
+        function clearNewMessages() {
+            newMessages = [];
+            statusText.textContent = 'Status: New messages cleared. Capture a baseline and press a button to detect new messages.';
+            updateLogsFromBuffer();
+        }
+
+        // Function to disconnect from the serial port
+        async function disconnectSerial() {
+            if (port && port.readable) {
+                clearInterval(updateInterval);
+                await reader.cancel();
+                await port.close();
+                isListening = false;
+                connectButton.textContent = 'Connect to ESP32';
+                captureBaselineButton.disabled = true;
+                clearNewMessagesButton.disabled = true;
+                statusText.textContent = 'Status: Disconnected';
+            }
+        }
+
+        // Event listener for the connect/disconnect button
+        connectButton.addEventListener('click', () => {
+            if (isListening) {
+                disconnectSerial();
+            } else {
+                connectSerial();
+            }
+        });
+
+        // Event listener for the capture baseline button
+        captureBaselineButton.addEventListener('click', captureBaseline);
+
+        // Event listener for the clear new messages button
+        clearNewMessagesButton.addEventListener('click', clearNewMessages);
+
+        // Event listeners for the filter input and button
+        filterButton.addEventListener('click', () => {
+            manualFilterId = filterIdInput.value.trim();
+            updateLogsFromBuffer();
+        });
+
+        filterIdInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                filterButton.click();
+            }
+        });
+
+        // Cleanup on window unload
+        window.addEventListener('beforeunload', disconnectSerial);
+    </script>
+</body>
+</html>
