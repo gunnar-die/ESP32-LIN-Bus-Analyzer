@@ -91,4 +91,4 @@ Once the board is flashed and wired correctly, follow these steps:
 
 ![LIN Bus Analyzer Screenshot](./screenshot.png)
 
-
+![PCB Screenshot](./lin_pcb.png)
